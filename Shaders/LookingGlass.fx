@@ -60,6 +60,13 @@
 	>;	
 #endif
 
+#ifndef BUFFER_PIXEL_SIZE
+	#define BUFFER_PIXEL_SIZE	ReShade::PixelSize
+#endif
+#ifndef BUFFER_SCREEN_SIZE
+	#define BUFFER_SCREEN_SIZE	ReShade::ScreenSize
+#endif
+
 // -- Advanced options --
 
 uniform float fUIFarPlane <
