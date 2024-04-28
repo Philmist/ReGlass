@@ -13,6 +13,7 @@
 // -- Help Text --
 
 #if __RESHADE__ >= 40500 // If Reshade version is above or equal to 4.5
+	/*
 	#if RESHADE_DEPTH_INPUT_IS_UPSIDE_DOWN
 		#define UPSIDE_DOWN_HELP_TEXT "RESHADE_DEPTH_INPUT_IS_UPSIDE_DOWN is currently set to 1.\n"\
 			"If the depth map is upside down, change this to 0."
@@ -36,6 +37,13 @@
 		#define LOGARITHMIC_HELP_TEXT "RESHADE_DEPTH_INPUT_IS_LOGARITHMIC is currently set to 0.\n"\
 			"If the depth map has banding artifacts (extra stripes) change this to 1."
 	#endif
+	*/
+
+	#if REGLASS_OUTPUT_IS_CHROMA
+		#define DEPTH_OUTPUT_CHROMA_TEXT "REGLASS_OUTPUT_IS_CHROMA = 1"
+	#else
+		#define DEPTH_OUTPUT_CHROMA_TEXT "REGLASS_OUTPUT_IS_CHROMA = 0"
+	#endif
 
 	uniform int LG_about <
 		ui_type = "radio"; ui_label = " ";
@@ -55,32 +63,68 @@
 			"The settings below are only used while this filter is active, but some global settings will affect.\n"
 			"how screenshots appear. For example:\n"
 			"\n"
-			"\n"
-			UPSIDE_DOWN_HELP_TEXT "\n"
-		    "\n"
-			REVERSED_HELP_TEXT "\n"
-		    "\n"
-			LOGARITHMIC_HELP_TEXT "\n";
+			DEPTH_OUTPUT_CHROMA_TEXT "\n";
 	>;	
 #endif
 
 // -- Options --
 
+/*
 uniform float fUIFarPlane <
 	ui_type = "drag";
 	ui_label = "Far Importance";
 	ui_tooltip = "How much importance is given to objects that are far away.\n";
 	ui_min = 0.0; ui_max = 1000.0;
-	ui_step = 0.01;
-> = 200;
+	ui_step = 0.1;
+> = 1000.0;
 
 uniform float fUIDepthMultiplier <
 	ui_type = "drag";
 	ui_label = "Multiplier";
 	ui_tooltip = "RESHADE_DEPTH_MULTIPLIER=<value>";
 	ui_min = 0.0; ui_max = 1000.0;
-	ui_step = 0.005;
-> = 2;
+	ui_step = 0.001;
+> = 1.0;
+*/
+
+uniform float fUIFarFactor <
+	ui_type = "drag";
+	ui_label = "Far factor";
+	ui_tooltip = "A value that is used where should be more important.";
+	ui_min = 0.0; ui_max = 1.0;
+	ui_step = 0.001;
+> = 0.5;
+
+// Caution: 0.0 is less emphasize.
+uniform float fUIGainFactor <
+	ui_type = "drag";
+	ui_label = "Gain factor";
+	ui_tooltip = "A gradient factor to emphasize depth value.";
+	ui_step = 0.01;
+	ui_min = 0.0; ui_max = 1.0;
+> = 0.0;
+
+uniform int iUIIsUseClip <
+	ui_type = "combo";
+	ui_label = "Enable far/near clip";
+	ui_items = "Off\0On(simple)\0ON(smoothstep)\0";
+> = 0;
+
+uniform float fNearClip <
+	ui_type = "drag";
+	ui_label = "Near clip position";
+	ui_tooltip = "If original depth value is less than this, it will clamp at 0.0.";
+	ui_min = 0.0; ui_max = 1.0;
+	ui_step = 0.0005;
+> = 0.0;
+
+uniform float fFarClip <
+	ui_type = "drag";
+	ui_label = "Far clip position";
+	ui_tooltip = "If original depth value is greater than this, it will clamp at 1.0.";
+	ui_min = 0.0; ui_max = 1.0;
+	ui_step = 0.0005;
+> = 1.0;
 
 uniform int GaussianBlurRadius <
 	ui_type = "drag";
@@ -298,12 +342,40 @@ float3 GaussianBlur1(in float4 pos : SV_Position, in float2 texcoord : TEXCOORD)
 
 // -- Depth Functions --
 
-float GetLinearizedDepth(float2 texcoord)
+// value at [begin, end)
+// See also: https://qiita.com/yuichiroharai/items/6e378cd128279ac9a2f0 (Japanese)
+float IsRange(float b, float e, float v)
 {
+	float from = step(b, v);
+	float end = 1.0 - step(e, v);
+	return from * end;
+}
+
+// See: https://qiita.com/oishihiroaki/items/9d899cdcb9bee682531a (Japanese)
+float Bias(float b, float x)
+{
+	return pow(x, log(b) / log(0.5));
+}
+
+// See: https://qiita.com/oishihiroaki/items/9d899cdcb9bee682531a (Japansese)
+//! @param[in] gain Gain factor: [0.0, 1.0], 0.0 is "retval = x".
+//! @return float translated value.
+float InvertedGain(float gain, float x)
+{
+	float g = lerp(0.5, 0.99999, gain);
+	return IsRange(0.5, 1.0, x) * (1.0 - Bias(1.0 - g, 2.0 - 2.0 * x) / 2.0)
+	+ IsRange(0.0, 0.5, x) * (Bias(1.0 - g, 2.0 * x) / 2.0);
+}
+
+
+float GetConvertedDepth(float2 texcoord)
+{
+	/*
 	if (RESHADE_DEPTH_INPUT_IS_UPSIDE_DOWN)
 		texcoord.y = 1.0 - texcoord.y;
 
 	float depth = tex2Dlod(ReShade::DepthBuffer, float4(texcoord, 0, 0)).x;
+	depth = depth * fUIDepthMultiplier;
 
 	const float C = 0.01;
 	if (RESHADE_DEPTH_INPUT_IS_LOGARITHMIC)
@@ -311,16 +383,53 @@ float GetLinearizedDepth(float2 texcoord)
 
 	if (RESHADE_DEPTH_INPUT_IS_REVERSED)
 		depth = 1.0 - depth;
+	*/
 
+	float depth = ReShade::GetLinearizedDepth(texcoord);
+
+	if (iUIIsUseClip == 1) {
+		depth = ((clamp(depth, fNearClip, fFarClip) - fNearClip) * (1.0f / abs(fFarClip - fNearClip))) * step(fNearClip, fFarClip);
+	} else if (iUIIsUseClip == 2) {
+		depth = smoothstep(fNearClip, fFarClip, depth);
+	} /* else {
+		depth = depth;
+	} */
+
+	//depth = InvertedGain(fUIGainFactor, Bias(1.0 - fUIFarFactor, depth));
+	depth = IsRange(0.0, fUIFarFactor, depth) * depth * 0.5 / fUIFarFactor
+	+ IsRange(fUIFarFactor, 1.01, depth) * ((depth - fUIFarFactor) * 0.5 / (1.0 - fUIFarFactor) + 0.5);
+	//depth = IsRange(0.0, 1.0, depth) * depth;
+
+	depth = InvertedGain(fUIGainFactor, depth);
+
+	/*
 	const float N = 1.0;
-	depth = depth * fUIDepthMultiplier;
 	depth /= fUIFarPlane - depth * (fUIFarPlane - N);
-	const float fMaxDepth = (1.0 * fUIDepthMultiplier) / (fUIFarPlane - 1.0 * (fUIFarPlane - N));
-	if (fMaxDepth > 1.0)
-		depth /= fMaxDepth;  // fit to [0.0, 1.0]
-	depth = clamp(depth, 0.0, 1.0);
+	*/
+	// const float fMaxDepth = (1.0 * fUIDepthMultiplier) / (fUIFarPlane - 1.0 * fUIDepthMultiplier * (fUIFarPlane - N));
+	// depth /= (step(1.0f, fMaxDepth) * (fMaxDepth - 1.0f)) + 1.0f;  // fit to [0.0, 1.0]
+	depth = saturate(depth);
 
 	return depth;
+}
+
+// See: https://stackoverflow.com/questions/14212984/custom-depth-shader-from-grayscale-to-rgba
+float3 DepthToRGB(in float d)
+{
+	float3 color;
+
+	// RED
+	color.r = d * 0.9f;
+	color.r = IsRange(0f, 0.75f, color.r) * (-2.13f * pow(color.r, 4) - 1.07f * pow(color.r, 3) + 0.133f * pow(color.r, 2) + 0.0667 * color.r + 1f);
+
+	// GREEN
+	color.g = IsRange(0f, 0.5f, d) * (1.6f * pow(d, 2) + 1.2f * d) + step(0.5f, d) * (3.2f * pow(d, 2) - 6.8f * d + 3.6f);
+
+	// BLUE
+	color.b = (1.0f - step(d, 0.5f)) * (-4.8f * pow(d, 2) + 9.2f * d - 3.4f);
+
+	color = saturate(color);
+	return color;
 }
 
 // -- LKG Functions --
@@ -356,7 +465,12 @@ void PS_LKGPortrait(in float4 position : SV_Position, in float2 texcoord : TEXCO
 	CenterView(position, texcoord, half_buffer);
 
 	// Calculate depth and normal
-	float3 depth = 1.0 - GetLinearizedDepth(texcoord).xxx; // Invert since LookingGlass wants white as close
+	float3 depth = 0.0f;
+#if REGLASS_OUTPUT_IS_CHROMA
+	depth = DepthToRGB(1.0f - GetConvertedDepth(texcoord).xxx);
+#else
+	depth = 1.0 - GetConvertedDepth(texcoord).xxx; // Invert since LookingGlass wants white as close
+#endif
 
 	// Ordered dithering
 #if 1
