@@ -40,9 +40,9 @@
 	*/
 
 	#if REGLASS_OUTPUT_IS_CHROMA
-		#define DEPTH_OUTPUT_CHROMA_TEXT "REGLASS_OUTPUT_IS_CHROMA := 1"
+		#define DEPTH_OUTPUT_CHROMA_TEXT "REGLASS_OUTPUT_IS_CHROMA is 1"
 	#else
-		#define DEPTH_OUTPUT_CHROMA_TEXT "REGLASS_OUTPUT_IS_CHROMA := 0"
+		#define DEPTH_OUTPUT_CHROMA_TEXT "REGLASS_OUTPUT_IS_CHROMA is 0"
 	#endif
 
 	uniform int LG_about <
@@ -473,7 +473,7 @@ float InvertedGain(float gain, float x)
 }
 
 
-float GetConvertedDepth(float2 texcoord)
+float GetLinearizedDepth(float2 texcoord)
 {
 	float depth = ReShade::GetLinearizedDepth(texcoord);
 
@@ -520,7 +520,7 @@ float3 DepthToRGB(in float depth)
 
 void PS_CalculateConvertedDepth(in float4 position : SV_Position, in float2 texcoord : TEXCOORD, out float color : SV_Target)
 {
-	color = GetConvertedDepth(texcoord);
+	color = GetLinearizedDepth(texcoord);
 }
 
 void PS_CalculateModefiedDepth(in float4 position : SV_Position, in float2 texcoord : TEXCOORD, out float2 fragment : SV_Target)
